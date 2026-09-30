@@ -27,6 +27,7 @@
 // imports
 import React, { useEffect, useRef, useCallback } from 'react';
 import { colors } from '../../Constants/index.js';
+import { useModal } from '../../Hooks/useModal.js';
 
 
 const EventModal = ({
@@ -37,8 +38,12 @@ const EventModal = ({
   editingEvent,
   eventInput,
   setEventInput,
-  schedules
+  schedules,
+  activeScheduleId,
+  error
 }) => {
+  useModal(isOpen, onClose, 'event-modal-title');
+
   // Reference for auto-focusing the input field
   const inputRef = useRef(null);
 
@@ -53,12 +58,12 @@ const EventModal = ({
     
     if (selectedTimeSlot) {
       // Find the active schedule (assuming first schedule if not specified)
-      const activeSchedule = schedules?.find(s => s.id === 'main') || schedules?.[0];
+      const activeSchedule = schedules?.find(s => s.id === activeScheduleId) || schedules?.[0];
       return activeSchedule?.name || 'Schedule';
     }
     
     return 'Schedule';
-  }, [isEditMode, editingEvent, selectedTimeSlot, schedules]);
+  }, [isEditMode, editingEvent, selectedTimeSlot, schedules, activeScheduleId]);
 
   // Format date and time for display
   const getTimeSlotDisplay = useCallback(() => {
@@ -67,17 +72,6 @@ const EventModal = ({
     }
     return '';
   }, [selectedTimeSlot]);
-
-  // Handle keyboard events
-  const handleKeyPress = useCallback((e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleSave();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      handleClose();
-    }
-  }, []);
 
   // Handle save action with validation
   const handleSave = useCallback(() => {
@@ -101,6 +95,18 @@ const EventModal = ({
     }
   }, [onClose]);
 
+  // Handle keyboard events
+  const handleKeyPress = useCallback((e) => {
+    if (e.isComposing) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleClose();
+    }
+  }, [handleSave, handleClose]);
+
   // Handle backdrop click (close modal when clicking outside)
   const handleBackdropClick = useCallback((e) => {
     if (e.target === e.currentTarget) {
@@ -113,28 +119,16 @@ const EventModal = ({
     if (isOpen && inputRef.current) {
       // Small delay to ensure modal is rendered
       const focusTimeout = setTimeout(() => {
-        inputRef.current.focus();
+        inputRef.current?.focus();
         // Select all text if editing
         if (isEditMode) {
-          inputRef.current.select();
+          inputRef.current?.select();
         }
       }, 100);
       
       return () => clearTimeout(focusTimeout);
     }
   }, [isOpen, isEditMode]);
-
-  // Prevent body scroll when modal is open
-  useEffect(() => {
-    if (isOpen) {
-      const originalOverflow = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-      
-      return () => {
-        document.body.style.overflow = originalOverflow;
-      };
-    }
-  }, [isOpen]);
 
   // Don't render if not open
   if (!isOpen) {
@@ -209,6 +203,7 @@ const EventModal = ({
           }
         </p>
 
+        {error && <p role="alert" style={{ color: colors.periwinkle[800], fontSize: '14px' }}>{error}</p>}
         {/* Event Input Field */}
         <div style={{ marginBottom: '24px' }}>
           <label 

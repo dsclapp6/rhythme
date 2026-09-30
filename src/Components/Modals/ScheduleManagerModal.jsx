@@ -35,6 +35,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Eye, EyeOff, X, Edit2, Plus } from 'lucide-react';
 import { colors, maxSchedules } from '../../Constants/index.js';
+import { useModal } from '../../Hooks/useModal.js';
 
 
 const ScheduleManagerModal = ({
@@ -51,6 +52,8 @@ const ScheduleManagerModal = ({
   canCreateSchedule,
   canDeleteSchedule
 }) => {
+  useModal(isOpen, onClose, 'schedule-manager-title');
+
   // State for inline editing of schedule names
   const [editingSchedule, setEditingSchedule] = useState(null);
   const [editingName, setEditingName] = useState('');
@@ -125,19 +128,19 @@ const ScheduleManagerModal = ({
   // Focus management when modal opens
   useEffect(() => {
     if (isOpen && newScheduleInputRef.current) {
-      setTimeout(() => {
-        newScheduleInputRef.current?.focus();
-      }, 100);
+      const timer = setTimeout(() => { newScheduleInputRef.current?.focus(); }, 100);
+      return () => clearTimeout(timer);
     }
   }, [isOpen]);
 
   // Focus management for edit input
   useEffect(() => {
     if (editingSchedule && editInputRef.current) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         editInputRef.current?.focus();
         editInputRef.current?.select();
       }, 100);
+      return () => clearTimeout(timer);
     }
   }, [editingSchedule]);
 

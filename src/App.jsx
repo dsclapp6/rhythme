@@ -36,7 +36,7 @@ class ErrorBoundary extends React.Component {
     this.state = { hasError: false, error: null, errorInfo: null };
   }
 
-  static getDerivedStateFromError(error) {
+  static getDerivedStateFromError(_error) {
     // Update state so the next render will show the fallback UI
     return { hasError: true };
   }
@@ -93,7 +93,7 @@ class ErrorBoundary extends React.Component {
               lineHeight: '1.5'
             }}>
               The Weekly Planner encountered an unexpected error. 
-              Don't worry - your data is safely stored in your browser.
+              Your saved data remains in this browser. Reload to try again.
             </p>
 
             <div style={{
@@ -118,7 +118,7 @@ class ErrorBoundary extends React.Component {
                 lineHeight: '1.4'
               }}>
                 <li>Refresh the page (Ctrl+R or Cmd+R)</li>
-                <li>Clear your browser cache</li>
+                <li>Keep this browser’s site data to preserve your planner</li>
                 <li>Try using a different browser</li>
                 <li>Check the browser console for more details</li>
               </ul>
@@ -169,7 +169,7 @@ class ErrorBoundary extends React.Component {
                   lineHeight: '1.4'
                 }}>
                   {this.state.error && this.state.error.toString()}
-                  {this.state.errorInfo.componentStack}
+                  {this.state.errorInfo?.componentStack}
                 </pre>
               </details>
             )}

@@ -1,405 +1,157 @@
-/**
- * useDragAndDrop Custom Hook
- * 
- * Manages complex drag and drop interactions for calendar events.
- * Supports moving events, extending event duration, and provides
- * visual feedback during drag operations.
- * 
- * Features:
- * - Event moving between time slots and days
- * - Event duration extension (up/down)
- * - Click vs. drag detection
- * - Visual feedback during drag
- * - Multi-slot event support
- * - Collision detection and prevention
- */
-
-
-// imports
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { dragModes, timings } from '../Constants/index.js';
-import { getTimeIndex, createExtendedEvent } from '../Utilities/EventUtils.js';
-
-
-/**
- * Custom hook for managing drag and drop interactions
- * 
- * @param {Object} schedules - Array of schedule objects
- * @param {Function} updateScheduleEvents - Function to update schedule events
- * @param {Function} onEventEdit - Callback for when user wants to edit an event
- * @returns {Object} Drag and drop state and handlers
- */
-
+import { dragModes } from '../Constants/index.js';
+import { getTimeIndex, transformEvent } from '../Utilities/EventUtils.js';
 
 export const useDragAndDrop = (schedules, updateScheduleEvents, onEventEdit) => {
-    // Drag operation state
-    const [isDragging, setIsDragging] = useState(false);
-    const [dragStart, setDragStart] = useState(null);
-    const [dragEnd, setDragEnd] = useState(null);
-    const [dragMode, setDragMode] = useState(null);
-    
-    // Visual feedback state
-    const [hoveredEvent, setHoveredEvent] = useState(null);
-    
-    // Click detection state
-    const [clickTimeout, setClickTimeout] = useState(null);
-    const clickTimeoutRef = useRef(null);
-  
-    /**
-     * Initiates a drag operation
-     * 
-     * @param {Date} date - Date of the event being dragged
-     * @param {string} time - Time slot of the event
-     * @param {MouseEvent} mouseEvent - Mouse event that triggered the drag
-     * @param {Object} eventData - Event data object
-     * @param {string} mode - Drag mode (move, extend-up, extend-down)
-     */
-    const handleDragStart = useCallback((date, time, mouseEvent, eventData, mode = dragModes.MOVE) => {
-      mouseEvent.preventDefault();
-      mouseEvent.stopPropagation();
-      
-      if (!eventData) {
-        console.warn('No event data provided for drag start');
-        return;
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState(null);
+  const [dragEnd, setDragEnd] = useState(null);
+  const [dragMode, setDragMode] = useState(null);
+  const [hoveredEvent, setHoveredEvent] = useState(null);
+  const [dragError, setDragError] = useState(null);
+  const operation = useRef(null);
+  const pendingClick = useRef(null);
+  const suppressClick = useRef(false);
+  const callbacks = useRef();
+  callbacks.current = { updateScheduleEvents, onEventEdit };
+
+  const resetDragState = useCallback(() => {
+    operation.current = null;
+    pendingClick.current = null;
+    setIsDragging(false);
+    setDragStart(null);
+    setDragEnd(null);
+    setDragMode(null);
+    setHoveredEvent(null);
+  }, []);
+  const handleDragStart = useCallback((date, time, mouseEvent, eventData, mode = dragModes.MOVE) => {
+    if (mouseEvent.button !== undefined && mouseEvent.button !== 0) return;
+    if (!eventData?.scheduleId || !eventData?.key || operation.current) return;
+    mouseEvent.preventDefault();
+    mouseEvent.stopPropagation();
+    pendingClick.current = null;
+    suppressClick.current = true;
+    const start = { date, time, eventKey: eventData.key, event: eventData.event, scheduleId: eventData.scheduleId,
+      originalTime: typeof eventData.event === 'object' ? eventData.event.startTime : time };
+    operation.current = { start, end: { date, time }, mode };
+    setIsDragging(true);
+    setDragStart(start);
+    setDragEnd({ date, time });
+    setDragMode(mode);
+  }, []);
+  // The existing event body uses mousedown. Edit on release; move only after the
+  // pointer crosses a threshold, so quick clicks and long presses both work.
+  const handleEventClick = useCallback((date, time, mouseEvent, eventData) => {
+    if (mouseEvent.button !== 0) return;
+    mouseEvent.preventDefault();
+    mouseEvent.stopPropagation();
+    pendingClick.current = { date, time, eventData, x: mouseEvent.clientX, y: mouseEvent.clientY };
+  }, []);
+  const handleDragOver = useCallback((date, time) => {
+    if (!operation.current) return;
+    operation.current.end = { date, time };
+    setDragEnd({ date, time });
+  }, []);
+  const handleDragEnd = useCallback(() => {
+    const drag = operation.current;
+    if (!drag) return;
+    // Clear first: bubbling mouseup and document handlers cannot commit twice.
+    operation.current = null;
+    let error = null;
+    const saved = callbacks.current.updateScheduleEvents(drag.start.scheduleId, events => {
+      const result = transformEvent(events, drag.start.eventKey, drag.end.date, drag.end.time, drag.mode, drag.start.time);
+      error = result.error;
+      return result.events;
+    });
+    if (!saved && !error) {
+      // A no-op drop is valid; only report an absent source schedule.
+      if (!schedules.some(s => s.id === drag.start.scheduleId)) error = 'This schedule has been removed.';
+    }
+    setDragError(error);
+    resetDragState();
+  }, [schedules, resetDragState]);
+
+  useEffect(() => {
+    const move = event => {
+      const pending = pendingClick.current;
+      if (pending && Math.hypot(event.clientX - pending.x, event.clientY - pending.y) >= 5) {
+        handleDragStart(pending.date, pending.time, event, pending.eventData);
       }
-  
-      // Clear any pending click timeout to prevent edit mode
-      if (clickTimeoutRef.current) {
-        clearTimeout(clickTimeoutRef.current);
-        clickTimeoutRef.current = null;
-        setClickTimeout(null);
+      if (operation.current) {
+        event.preventDefault();
+        const cell = event.target instanceof Element ? event.target.closest('[data-planner-date][data-planner-time]') : null;
+        if (cell) handleDragOver(new Date(cell.dataset.plannerDate), cell.dataset.plannerTime);
       }
-      
-      // Determine original time for multi-slot events
-      const originalTime = (typeof eventData.event === 'object' && eventData.event.startTime) 
-        ? eventData.event.startTime 
-        : time;
-          
-      // Set drag state
-      setIsDragging(true);
-      setDragMode(mode);
-      setDragStart({ 
-        date, 
-        time, 
-        eventKey: eventData.key, 
-        event: eventData.event, 
-        scheduleId: eventData.scheduleId,
-        originalTime: originalTime,
-        originalDate: date
-      });
-      setDragEnd({ date, time });
-  
-      // Add visual feedback to body during drag
-      document.body.style.userSelect = 'none';
-      document.body.style.cursor = mode === dragModes.MOVE ? 'move' : 'ns-resize';
-    }, []);
-  
-    /**
-     * Handles mouse events on events to distinguish clicks from drags
-     * 
-     * @param {Date} date - Date of the event
-     * @param {string} time - Time slot of the event
-     * @param {MouseEvent} mouseEvent - Mouse event
-     * @param {Object} eventData - Event data object
-     */
-    const handleEventClick = useCallback((date, time, mouseEvent, eventData) => {
-      mouseEvent.preventDefault();
-      mouseEvent.stopPropagation();
-      
-      // Set a timeout to detect if this is a click or drag start
-      const timeout = setTimeout(() => {
-        // If we get here, it's a click not a drag
-        if (onEventEdit) {
-          onEventEdit(eventData);
-        }
-        clickTimeoutRef.current = null;
-        setClickTimeout(null);
-      }, timings.CLICK_TIMEOUT);
-      
-      clickTimeoutRef.current = timeout;
-      setClickTimeout(timeout);
-    }, [onEventEdit]);
-  
-    /**
-     * Updates drag end position during drag operation
-     * 
-     * @param {Date} date - Current date under cursor
-     * @param {string} time - Current time slot under cursor
-     */
-    const handleDragOver = useCallback((date, time) => {
-      if (isDragging && dragStart) {
-        // Clear click timeout if dragging starts
-        if (clickTimeoutRef.current) {
-          clearTimeout(clickTimeoutRef.current);
-          clickTimeoutRef.current = null;
-          setClickTimeout(null);
-        }
-        
-        setDragEnd({ date, time });
-      }
-    }, [isDragging, dragStart]);
-  
-    /**
-     * Completes the drag operation and updates the event
-     */
-    const handleDragEnd = useCallback(() => {
-      if (!isDragging || !dragStart || !dragEnd || !dragEnd.date || !dragEnd.time) {
-        setIsDragging(false);
-        setDragStart(null);
-        setDragEnd(null);
-        setDragMode(null);
-        return;
-      }
-  
-      const originalTimeIndex = getTimeIndex(dragStart.originalTime || dragStart.time);
-      const endTimeIndex = getTimeIndex(dragEnd.time);
-      
-      const schedule = schedules.find(s => s.id === dragStart.scheduleId);
-      if (!schedule) {
-        console.warn('Schedule not found for drag operation');
-        setIsDragging(false);
-        setDragStart(null);
-        setDragEnd(null);
-        setDragMode(null);
-        return;
-      }
-  
-      const eventText = typeof dragStart.event === 'object' ? dragStart.event.text : dragStart.event;
-      const newEvents = { ...schedule.events };
-      
-      // Remove the original event
-      delete newEvents[dragStart.eventKey];
-      
-      // Determine the type of drag operation
-      const isSameDate = dragStart.date.toDateString() === dragEnd.date.toDateString();
-      const dragStartTime = dragStart.originalTime || dragStart.time;
-      const isExtending = isSameDate && 
-                         dragStartTime === dragStart.time && 
-                         dragMode === dragModes.EXTEND_DOWN &&
-                         endTimeIndex > originalTimeIndex;
-      
-      try {
-        if (isExtending) {
-          // Extending: create a multi-slot event from original time to drag end time
-          const newEventKey = `${dragStart.date.toDateString()}-${dragStartTime}`;
-          newEvents[newEventKey] = createExtendedEvent(eventText, dragStartTime, dragEnd.time);
-        } else {
-          // Moving: create event at new location
-          const newEventKey = `${dragEnd.date.toDateString()}-${dragEnd.time}`;
-          
-          if (typeof dragStart.event === 'object' && dragStart.event.startTime && dragStart.event.endTime) {
-            // Preserve duration for multi-slot events when moving
-            const originalStartIndex = getTimeIndex(dragStart.event.startTime);
-            const originalEndIndex = getTimeIndex(dragStart.event.endTime);
-            const duration = originalEndIndex - originalStartIndex;
-            const newEndIndex = Math.min(endTimeIndex + duration, 30); // Max time slot index
-            
-            if (duration > 0 && newEndIndex < 31) { // Ensure we don't exceed time slots
-              const endTime = ['6:00', '6:30', '7:00', '7:30', '8:00', '8:30', 
-                '9:00', '9:30', '10:00', '10:30', '11:00', '11:30', 
-                '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', 
-                '15:00', '15:30', '16:00', '16:30', '17:00', '17:30', 
-                '18:00', '18:30', '19:00', '19:30', '20:00', '20:30', 
-                '21:00'][newEndIndex];
-              
-              newEvents[newEventKey] = createExtendedEvent(eventText, dragEnd.time, endTime);
-            } else {
-              // Fallback to single slot if duration calculations fail
-              newEvents[newEventKey] = eventText;
-            }
-          } else {
-            // Single slot event
-            newEvents[newEventKey] = eventText;
-          }
-        }
-        
-        // Update the schedule with new events
-        updateScheduleEvents(dragStart.scheduleId, newEvents);
-      } catch (error) {
-        console.error('Error updating events during drag operation:', error);
-        // Restore original event if update fails
-        newEvents[dragStart.eventKey] = dragStart.event;
-        updateScheduleEvents(dragStart.scheduleId, newEvents);
-      }
-      
-      // Reset drag state
-      setIsDragging(false);
-      setDragStart(null);
-      setDragEnd(null);
-      setDragMode(null);
-    }, [isDragging, dragStart, dragEnd, schedules, updateScheduleEvents, dragMode]);
-  
-    /**
-     * Determines if a cell should show drag feedback
-     * 
-     * @param {Date} date - Cell date
-     * @param {string} time - Cell time
-     * @returns {Object} Object with visual state flags
-     */
-    const getCellDragState = useCallback((date, time) => {
-      if (!isDragging || !dragStart || !dragEnd) {
-        return {
-          isDragTarget: false,
-          isDragPath: false,
-          isDragSource: false
-        };
-      }
-  
-      const isDragTarget = dragEnd.date.toDateString() === date.toDateString() && 
-                          dragEnd.time === time;
-      
-      const isDragSource = dragStart.date.toDateString() === date.toDateString() &&
-                          ((dragMode === dragModes.MOVE && dragStart.time === time) ||
-                           (dragMode === dragModes.EXTEND_DOWN && (dragStart.originalTime || dragStart.time) === time) ||
-                           (dragMode === dragModes.EXTEND_UP && (dragStart.originalTime || dragStart.time) === time));
-  
-      const isDragPath = dragStart.date.toDateString() === date.toDateString() &&
-                        dragEnd.date.toDateString() === date.toDateString() &&
-                        ((dragMode === dragModes.EXTEND_DOWN && 
-                          getTimeIndex(time) >= getTimeIndex(dragStart.originalTime || dragStart.time) &&
-                          getTimeIndex(time) <= getTimeIndex(dragEnd.time)) ||
-                         (dragMode === dragModes.EXTEND_UP &&
-                          getTimeIndex(time) >= getTimeIndex(dragEnd.time) &&
-                          getTimeIndex(time) <= getTimeIndex(dragStart.originalTime || dragStart.time)));
-  
-      return {
-        isDragTarget,
-        isDragPath,
-        isDragSource
-      };
-    }, [isDragging, dragStart, dragEnd, dragMode]);
-  
-    /**
-     * Gets appropriate cursor style based on drag mode
-     */
-    const getDragCursor = useCallback(() => {
-      if (!isDragging) return 'default';
-      
-      switch (dragMode) {
-        case dragModes.MOVE:
-          return 'move';
-        case dragModes.EXTEND_UP:
-        case dragModes.EXTEND_DOWN:
-          return 'ns-resize';
-        default:
-          return 'move';
-      }
-    }, [isDragging, dragMode]);
-  
-    /**
-     * Gets drag status message for user feedback
-     */
-    const getDragStatusMessage = useCallback(() => {
-      if (!isDragging || !dragStart || !dragEnd) return null;
-  
-      switch (dragMode) {
-        case dragModes.EXTEND_DOWN:
-          return '⬇️ Extending event down...';
-        case dragModes.EXTEND_UP:
-          return '⬆️ Extending event up...';
-        case dragModes.MOVE:
-          return '📅 Moving event...';
-        default:
-          return '🔄 Dragging...';
-      }
-    }, [isDragging, dragStart, dragEnd, dragMode]);
-  
-    // Global mouse event handlers for drag completion
-    useEffect(() => {
-      const handleGlobalMouseUp = (e) => {
-        if (isDragging) {
-          handleDragEnd();
-        }
-        
-        // Clear any pending click timeout
-        if (clickTimeoutRef.current) {
-          clearTimeout(clickTimeoutRef.current);
-          clickTimeoutRef.current = null;
-          setClickTimeout(null);
-        }
-      };
-  
-      const handleGlobalMouseMove = (e) => {
-        if (isDragging) {
-          // Prevent text selection during drag
-          e.preventDefault();
-        }
-      };
-  
-      // Add event listeners when dragging
-      if (isDragging) {
-        document.addEventListener('mouseup', handleGlobalMouseUp);
-        document.addEventListener('mousemove', handleGlobalMouseMove);
-      }
-  
-      // Always listen for mouseup to clear click timeouts
-      document.addEventListener('mouseup', handleGlobalMouseUp);
-  
-      return () => {
-        document.removeEventListener('mouseup', handleGlobalMouseUp);
-        document.removeEventListener('mousemove', handleGlobalMouseMove);
-        document.body.style.userSelect = '';
-        document.body.style.cursor = '';
-      };
-    }, [isDragging, handleDragEnd]);
-  
-    // Cleanup effect for component unmount
-    useEffect(() => {
-      return () => {
-        if (clickTimeoutRef.current) {
-          clearTimeout(clickTimeoutRef.current);
-        }
-      };
-    }, []);
-  
-    // Return all drag and drop state and handlers
-    return {
-      // State
-      isDragging,
-      dragStart,
-      dragEnd,
-      dragMode,
-      hoveredEvent,
-      
-      // Event handlers
-      handleDragStart,
-      handleEventClick,
-      handleDragOver,
-      handleDragEnd,
-      
-      // Visual state helpers
-      getCellDragState,
-      getDragCursor,
-      getDragStatusMessage,
-      
-      // Hover state
-      setHoveredEvent,
-      
-      // Utility functions
-      isEventHovered: useCallback((eventKey, eventIndex) => {
-        return hoveredEvent === `${eventKey}-${eventIndex}`;
-      }, [hoveredEvent]),
-      
-      // Drag validation
-      canDragEvent: useCallback((eventData) => {
-        return eventData && eventData.scheduleId && eventData.key;
-      }, []),
-      
-      // Reset functions
-      resetDragState: useCallback(() => {
-        setIsDragging(false);
-        setDragStart(null);
-        setDragEnd(null);
-        setDragMode(null);
-        setHoveredEvent(null);
-        
-        if (clickTimeoutRef.current) {
-          clearTimeout(clickTimeoutRef.current);
-          clickTimeoutRef.current = null;
-        }
-        
-        document.body.style.userSelect = '';
-        document.body.style.cursor = '';
-      }, [])
     };
-  };
+    const release = event => {
+      const pending = pendingClick.current;
+      pendingClick.current = null;
+      if (operation.current) {
+        const cell = event.target instanceof Element ? event.target.closest('[data-planner-date][data-planner-time]') : null;
+        if (cell) {
+          handleDragOver(new Date(cell.dataset.plannerDate), cell.dataset.plannerTime);
+          handleDragEnd();
+        } else resetDragState();
+      } else if (pending) {
+        suppressClick.current = true;
+        callbacks.current.onEventEdit?.(pending.eventData);
+      }
+    };
+    const cancel = () => resetDragState();
+    const keyDown = event => { if (event.key === 'Escape') cancel(); };
+    // Stop the click following a drag from opening an empty-cell modal.
+    const click = event => {
+      if (suppressClick.current) {
+        event.stopPropagation();
+        event.preventDefault();
+        suppressClick.current = false;
+      }
+    };
+    const mouseDown = () => { suppressClick.current = false; };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', release);
+    document.addEventListener('keydown', keyDown);
+    document.addEventListener('click', click, true);
+    document.addEventListener('mousedown', mouseDown, true);
+    window.addEventListener('blur', cancel);
+    return () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', release);
+      document.removeEventListener('keydown', keyDown);
+      document.removeEventListener('click', click, true);
+      document.removeEventListener('mousedown', mouseDown, true);
+      window.removeEventListener('blur', cancel);
+    };
+  }, [handleDragStart, handleDragOver, handleDragEnd, resetDragState]);
+  useEffect(() => {
+    if (!isDragging) return;
+    const { cursor, userSelect } = document.body.style;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = dragMode === dragModes.MOVE ? 'move' : 'ns-resize';
+    return () => {
+      document.body.style.cursor = cursor;
+      document.body.style.userSelect = userSelect;
+    };
+  }, [isDragging, dragMode]);
+
+  const getCellDragState = useCallback((date, time) => {
+    const drag = operation.current;
+    if (!drag) return { isDragTarget: false, isDragPath: false, isDragSource: false };
+    const sameStartDate = drag.start.date.toDateString() === date.toDateString();
+    const sameEndDate = drag.end.date.toDateString() === date.toDateString();
+    return {
+      isDragTarget: sameEndDate && drag.end.time === time,
+      isDragSource: sameStartDate && drag.start.time === time,
+      isDragPath: sameStartDate && sameEndDate && drag.mode !== dragModes.MOVE &&
+        getTimeIndex(time) >= Math.min(getTimeIndex(drag.start.time), getTimeIndex(drag.end.time)) &&
+        getTimeIndex(time) <= Math.max(getTimeIndex(drag.start.time), getTimeIndex(drag.end.time))
+    };
+  }, []);
+  return { isDragging, dragStart, dragEnd, dragMode, hoveredEvent, dragError,
+    handleDragStart, handleEventClick, handleDragOver, handleDragEnd, getCellDragState, resetDragState, setHoveredEvent,
+    getDragCursor: () => isDragging ? dragMode === dragModes.MOVE ? 'move' : 'ns-resize' : 'default',
+    getDragStatusMessage: () => !isDragging ? null : dragMode === dragModes.MOVE ? '📅 Moving event...'
+      : dragMode === dragModes.EXTEND_UP ? '⬆️ Extending event up...' : '⬇️ Extending event down...',
+    isEventHovered: (key, index) => hoveredEvent === `${key}-${index}`,
+    canDragEvent: event => Boolean(event?.scheduleId && event?.key) };
+};

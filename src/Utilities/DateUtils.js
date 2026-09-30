@@ -21,10 +21,13 @@ export const getWeekDates = (date) => {
     
     // Calculate the start of the week (Sunday)
     const diff = startDate.getDate() - day;
+    startDate.setDate(diff);
+    startDate.setHours(0, 0, 0, 0);
     
     // Generate array of dates for the entire week
     for (let i = 0; i < 7; i++) {
-      const weekDate = new Date(startDate.setDate(diff + i));
+      const weekDate = new Date(startDate);
+      weekDate.setDate(startDate.getDate() + i);
       week.push(new Date(weekDate)); // Create new Date object to avoid reference issues
     }
     
@@ -163,7 +166,11 @@ export const getWeekDates = (date) => {
    */
   export const addMonths = (date, months) => {
     const newDate = new Date(date);
+    const originalDay = newDate.getDate();
+    newDate.setDate(1);
     newDate.setMonth(newDate.getMonth() + months);
+    const lastDay = new Date(newDate.getFullYear(), newDate.getMonth() + 1, 0).getDate();
+    newDate.setDate(Math.min(originalDay, lastDay));
     return newDate;
   };
   

@@ -27,6 +27,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { Eye, EyeOff, Layers, Minimize2, BookOpen, Grid } from 'lucide-react';
 import { colors, layoutPresets } from '../../Constants/index.js';
+import { useModal } from '../../Hooks/useModal.js';
 
 
 const LayoutModal = ({
@@ -37,6 +38,8 @@ const LayoutModal = ({
     applyLayoutPreset,
     todos
   }) => {
+  useModal(isOpen, onClose, 'layout-modal-title');
+
     // Handle backdrop click
     const handleBackdropClick = useCallback((e) => {
       if (e.target === e.currentTarget) {
@@ -180,7 +183,7 @@ const LayoutModal = ({
               lineHeight: '1.5'
             }}>
               Toggle sections on/off to reduce overwhelm and focus on what matters most to you. 
-              Hide sections you don't use to create a cleaner, more focused interface.
+              Hide sections you don&#39;t use to create a cleaner, more focused interface.
             </p>
           </div>
   
@@ -411,7 +414,7 @@ const LayoutModal = ({
                 💡 Layout Tips:
               </div>
               <ul style={{ margin: 0, paddingLeft: '16px' }}>
-                <li>Start with "Minimal Focus" if you feel overwhelmed</li>
+                <li>Start with &quot;Minimal Focus&quot; if you feel overwhelmed</li>
                 <li>Show sections as you need them - less is often more</li>
                 <li>Day and Week sections are great for immediate focus</li>
                 <li>Month and Year are perfect for longer-term planning</li>

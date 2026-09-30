@@ -16,6 +16,7 @@
 
 // imports
 import { storageKeys } from '../Constants/index.js';
+import { isSchedules, normalizeSchedules, isTodoList, isRecurring, normalizeRecurring, isRecord, isProgress, normalizeProgress, isLayout } from './DataUtils.js';
 
 
 /**
@@ -53,10 +54,6 @@ export const isLocalStorageAvailable = () => {
  */
 export const safeGetItem = (key, defaultValue = null) => {
   try {
-    if (!isLocalStorageAvailable()) {
-      return defaultValue;
-    }
-    
     const item = localStorage.getItem(key);
     if (item === null) {
       return defaultValue;
@@ -79,18 +76,13 @@ export const safeGetItem = (key, defaultValue = null) => {
  */
 export const safeSetItem = (key, value) => {
   try {
-    if (!isLocalStorageAvailable()) {
-      console.warn('localStorage not available, cannot save data');
-      return false;
-    }
-    
     const serializedValue = JSON.stringify(value);
     localStorage.setItem(key, serializedValue);
     return true;
   } catch (error) {
     if (error.name === 'QuotaExceededError') {
       console.error('localStorage quota exceeded. Consider cleaning up old data.');
-      handleQuotaExceeded();
+
     } else {
       console.warn(`Error writing to localStorage key "${key}":`, error);
     }
@@ -134,7 +126,7 @@ export const getStorageSize = () => {
     let totalSize = 0;
     
     for (let key in localStorage) {
-      if (localStorage.hasOwnProperty(key)) {
+      if (Object.hasOwn(localStorage, key)) {
         const value = localStorage.getItem(key);
         totalSize += key.length + (value ? value.length : 0);
       }
@@ -168,7 +160,7 @@ export const getStorageBreakdown = () => {
     }
     
     for (let key in localStorage) {
-      if (localStorage.hasOwnProperty(key)) {
+      if (Object.hasOwn(localStorage, key)) {
         const value = localStorage.getItem(key);
         const size = (key.length + (value ? value.length : 0)) * 2;
         
@@ -193,34 +185,6 @@ export const getStorageBreakdown = () => {
 
 
 /**
- * Handles quota exceeded errors by attempting cleanup
- */
-const handleQuotaExceeded = () => {
-  console.warn('localStorage quota exceeded, attempting cleanup...');
-  
-  try {
-    // Remove any temporary or cache keys first
-    const tempKeys = [];
-    for (let key in localStorage) {
-      if (key.includes('temp_') || key.includes('cache_') || key.includes('_tmp')) {
-        tempKeys.push(key);
-      }
-    }
-    
-    tempKeys.forEach(key => localStorage.removeItem(key));
-    
-    if (tempKeys.length > 0) {
-      console.log(`Removed ${tempKeys.length} temporary keys from localStorage`);
-    } else {
-      console.warn('No temporary keys found to clean up. Consider exporting data and clearing storage.');
-    }
-  } catch (error) {
-    console.error('Error during cleanup:', error);
-  }
-};
-
-
-/**
  * Exports all app data as a JSON object
  * 
  * @returns {Object} Object containing all app data
@@ -233,14 +197,16 @@ export const exportAppData = () => {
   };
   
   try {
-    // Export all app-related keys
+    exportData.rawStorage = {};
     Object.entries(storageKeys).forEach(([name, key]) => {
-      const data = safeGetItem(key);
-      if (data !== null) {
-        exportData.data[name] = data;
+      const raw = localStorage.getItem(key);
+      if (raw !== null) {
+        exportData.rawStorage[name] = raw;
+        // Keep unreadable sections in the backup for recovery instead of discarding them.
+        try { exportData.data[name] = JSON.parse(raw); } catch { /* rawStorage preserves the original */ }
       }
     });
-    
+
     return exportData;
   } catch (error) {
     console.error('Error exporting app data:', error);
@@ -257,48 +223,33 @@ export const exportAppData = () => {
  * @returns {boolean} True if successful
  */
 export const importAppData = (importData, overwrite = false) => {
+  const previous = new Map();
   try {
-    // Validate import data structure
-    if (!importData || typeof importData !== 'object') {
-      throw new Error('Invalid import data format');
+    if (!isRecord(importData) || !isRecord(importData.data)) throw new Error('Invalid import data format');
+    const updates = [];
+    for (const [name, data] of Object.entries(importData.data)) {
+      if (!Object.hasOwn(storageKeys, name)) continue;
+      const key = storageKeys[name];
+      const current = localStorage.getItem(key);
+      if (current !== null && !overwrite) continue;
+      const validators = { schedules: value => isSchedules(normalizeSchedules(value)),
+        recurringTodos: value => isRecurring(normalizeRecurring(value)), recurringCompletionState: isRecord,
+        progressStats: value => isProgress(normalizeProgress(value)), layoutSections: isLayout,
+        calendarEvents: isRecord };
+      const validator = validators[name] || isTodoList;
+      if (!validator(data)) throw new Error(`Invalid data section: ${name}`);
+      previous.set(key, current);
+      updates.push([key, JSON.stringify(data)]);
     }
-    
-    if (!importData.data || typeof importData.data !== 'object') {
-      throw new Error('Import data missing data section');
-    }
-    
-    let importedCount = 0;
-    let skippedCount = 0;
-    
-    // Import each data section
-    Object.entries(importData.data).forEach(([name, data]) => {
-      const storageKey = storageKeys[name];
-      
-      if (!storageKey) {
-        console.warn(`Unknown data section: ${name}`);
-        return;
-      }
-      
-      // Check if data already exists
-      const existingData = safeGetItem(storageKey);
-      
-      if (existingData !== null && !overwrite) {
-        skippedCount++;
-        console.log(`Skipped existing data for: ${name}`);
-        return;
-      }
-      
-      // Import the data
-      const success = safeSetItem(storageKey, data);
-      if (success) {
-        importedCount++;
-      }
-    });
-    
-    console.log(`Import completed: ${importedCount} imported, ${skippedCount} skipped`);
+    // Validate everything before changing anything; roll back if any write fails.
+    for (const [key, value] of updates) localStorage.setItem(key, value);
+    window.dispatchEvent(new Event('focus'));
     return true;
-  } catch (error) {
-    console.error('Error importing app data:', error);
+  } catch {
+    for (const [key, value] of previous) {
+      try { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); }
+      catch { /* The existing values remain wherever the browser rejected writes. */ }
+    }
     return false;
   }
 };
@@ -490,7 +441,7 @@ const validateSchedulesData = (data, results) => {
   }
   
   data.forEach((schedule, index) => {
-    if (!schedule.id || !schedule.name || typeof schedule.events !== 'object') {
+    if (!schedule || !schedule.id || !schedule.name || typeof schedule.events !== 'object') {
       results.errors.push(`Schedules[${index}]: Missing required fields`);
       results.valid = false;
     }
@@ -509,7 +460,7 @@ const validateTodosData = (data, results, name) => {
   }
   
   data.forEach((todo, index) => {
-    if (!todo.id || !todo.text || typeof todo.completed !== 'boolean') {
+    if (!todo || !todo.id || !todo.text || typeof todo.completed !== 'boolean') {
       results.errors.push(`${name}[${index}]: Missing required fields`);
       results.valid = false;
     }

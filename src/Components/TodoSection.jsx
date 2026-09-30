@@ -81,7 +81,7 @@ const TodoSection = ({
 
   // Handle keyboard events for regular todo input
   const handleTodoKeyPress = (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault();
       addTodo(type);
     }
@@ -89,7 +89,7 @@ const TodoSection = ({
 
   // Handle keyboard events for recurring todo input
   const handleRecurringKeyPress = (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault();
       addRecurringTodo(type);
     }
@@ -129,7 +129,7 @@ const TodoSection = ({
         return a.completed - b.completed;
       }
       // Secondary sort: by creation date (newest first for incomplete)
-      return b.id - a.id;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0) || (Number(b.id) - Number(a.id) || 0);
     });
 
   // Sort recurring todos similarly
@@ -145,7 +145,7 @@ const TodoSection = ({
             return aCompleted - bCompleted;
           }
           // Secondary sort: by creation date (newest first)
-          return b.id - a.id;
+          return new Date(b.createdAt || 0) - new Date(a.createdAt || 0) || (Number(b.id) - Number(a.id) || 0);
         })
     : [];
 
@@ -375,7 +375,7 @@ const TodoSection = ({
             type="text"
             value={newTodoInputs[type] || ''}
             onChange={(e) => setNewTodoInputs(prev => ({ ...prev, [type]: e.target.value }))}
-            onKeyPress={handleTodoKeyPress}
+            onKeyDown={handleTodoKeyPress}
             onFocus={handleInputFocus}
             onBlur={handleInputBlur}
             placeholder={`Add ${title.toLowerCase()}...`}
@@ -429,7 +429,7 @@ const TodoSection = ({
               type="text"
               value={newRecurringInputs[type] || ''}
               onChange={(e) => setNewRecurringInputs(prev => ({ ...prev, [type]: e.target.value }))}
-              onKeyPress={handleRecurringKeyPress}
+              onKeyDown={handleRecurringKeyPress}
               onFocus={handleRecurringInputFocus}
               onBlur={handleRecurringInputBlur}
               placeholder={getRecurringPlaceholder()}

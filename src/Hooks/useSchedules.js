@@ -1,397 +1,105 @@
-/**
- * useSchedules Custom Hook
- * 
- * Manages the multi-schedule system for the weekly planner.
- * Handles schedule creation, deletion, visibility toggling, and event management
- * across multiple overlaid schedules.
- * 
- * Features:
- * - Multiple schedule support (up to 6 schedules)
- * - Schedule visibility toggles for overlay system
- * - Color-coded schedules
- * - Active schedule management
- * - Event CRUD operations
- * - Persistent storage via localStorage
- */
-
-
-// imports
 import { useState, useCallback, useMemo } from 'react';
 import { useLocalStorage } from './useLocalStorage.js';
 import { colors, maxSchedules, storageKeys } from '../Constants/index.js';
-import { getEventKey } from '../Utilities/EventUtils.js';
+import { getEventKey, hasEventOverlap, transformEvent } from '../Utilities/EventUtils.js';
+import { createId, isSchedules, normalizeSchedules } from '../Utilities/DataUtils.js';
 
+const defaultSchedules = [{ id: 'main', name: 'Main Schedule', events: {}, isVisible: true, color: colors.scheduleColors[0] }];
 
-/**
- * Default schedule structure
- * Every app instance starts with a main schedule that cannot be deleted
- */
+export const useSchedules = () => {
+  const [schedules, setSchedules, , storageError] = useLocalStorage(storageKeys.schedules, defaultSchedules, {
+    validator: isSchedules, normalize: normalizeSchedules
+  });
+  const [activeScheduleId, setActiveScheduleId] = useState('main');
+  const [showScheduleManager, setShowScheduleManager] = useState(false);
+  const [newScheduleName, setNewScheduleName] = useState('');
+  const [eventError, setEventError] = useState(null);
 
-
-const defaultSchedules = [
-    {
-      id: 'main',
-      name: 'Main Schedule',
-      events: {},
-      isVisible: true,
-      color: colors.scheduleColors[0]
-    }
-  ];
-  
-  /**
-   * Custom hook for managing multiple schedules
-   * 
-   * @returns {Object} Object containing schedule state and management functions
-   */
-  export const useSchedules = () => {
-    // Persist schedules to localStorage
-    const [schedules, setSchedules] = useLocalStorage(
-      storageKeys.schedules, 
-      defaultSchedules,
-      {
-        validator: (data) => {
-          // Validate that data is an array of valid schedule objects
-          return Array.isArray(data) && 
-                 data.every(schedule => 
-                   schedule.id && 
-                   schedule.name && 
-                   typeof schedule.events === 'object' &&
-                   typeof schedule.isVisible === 'boolean' &&
-                   schedule.color
-                 );
-        }
-      }
-    );
-  
-    // Track which schedule is currently active for adding new events
-    const [activeScheduleId, setActiveScheduleId] = useState('main');
-  
-    // State for schedule management modal
-    const [showScheduleManager, setShowScheduleManager] = useState(false);
-    const [newScheduleName, setNewScheduleName] = useState('');
-  
-    /**
-     * Gets the currently active schedule object
-     * Fallbacks to first schedule if active schedule is not found
-     */
-    const getActiveSchedule = useCallback(() => {
-      return schedules.find(s => s.id === activeScheduleId) || schedules[0];
-    }, [schedules, activeScheduleId]);
-  
-    /**
-     * Gets all visible schedules for display purposes
-     */
-    const getVisibleSchedules = useCallback(() => {
-      return schedules.filter(schedule => schedule.isVisible);
-    }, [schedules]);
-  
-    /**
-     * Creates a new schedule with validation
-     * 
-     * @param {string} name - Name for the new schedule
-     * @returns {boolean} True if schedule was created successfully
-     */
-    const createSchedule = useCallback((name = newScheduleName) => {
-      const trimmedName = name.trim();
-      
-      // Validate input
-      if (!trimmedName) {
-        console.warn('Schedule name cannot be empty');
-        return false;
-      }
-  
-      // Check if we've reached the maximum number of schedules
-      if (schedules.length >= maxSchedules) {
-        console.warn(`Maximum of ${maxSchedules} schedules allowed`);
-        return false;
-      }
-  
-      // Check for duplicate names
-      if (schedules.some(schedule => 
-        schedule.name.toLowerCase() === trimmedName.toLowerCase()
-      )) {
-        console.warn('Schedule name already exists');
-        return false;
-      }
-  
-      // Create new schedule object
-      const newSchedule = {
-        id: Date.now().toString(), // Simple unique ID generation
-        name: trimmedName,
-        events: {},
-        isVisible: true,
-        color: colors.scheduleColors[schedules.length % colors.scheduleColors.length]
-      };
-  
-      // Add to schedules array
-      setSchedules(prev => [...prev, newSchedule]);
-      setNewScheduleName('');
-      
-      return true;
-    }, [schedules, newScheduleName, setSchedules]);
-  
-    /**
-     * Deletes a schedule with validation
-     * Cannot delete the main schedule or if it's the only schedule
-     * 
-     * @param {string} scheduleId - ID of schedule to delete
-     * @returns {boolean} True if schedule was deleted successfully
-     */
-    const deleteSchedule = useCallback((scheduleId) => {
-      // Prevent deletion of main schedule
-      if (scheduleId === 'main') {
-        console.warn('Cannot delete main schedule');
-        return false;
-      }
-  
-      // Prevent deletion if it's the only schedule
-      if (schedules.length <= 1) {
-        console.warn('Cannot delete the only remaining schedule');
-        return false;
-      }
-  
-      // Remove the schedule
-      setSchedules(prev => prev.filter(s => s.id !== scheduleId));
-  
-      // If deleted schedule was active, switch to main
-      if (activeScheduleId === scheduleId) {
-        setActiveScheduleId('main');
-      }
-  
-      return true;
-    }, [schedules.length, setSchedules, activeScheduleId]);
-  
-    /**
-     * Toggles the visibility of a schedule for overlay system
-     * 
-     * @param {string} scheduleId - ID of schedule to toggle
-     */
-    const toggleScheduleVisibility = useCallback((scheduleId) => {
-      setSchedules(prev => prev.map(schedule => 
-        schedule.id === scheduleId 
-          ? { ...schedule, isVisible: !schedule.isVisible }
-          : schedule
-      ));
-    }, [setSchedules]);
-  
-    /**
-     * Renames a schedule with validation
-     * 
-     * @param {string} scheduleId - ID of schedule to rename
-     * @param {string} newName - New name for the schedule
-     * @returns {boolean} True if schedule was renamed successfully
-     */
-    const renameSchedule = useCallback((scheduleId, newName) => {
-      const trimmedName = newName.trim();
-      
-      if (!trimmedName) {
-        console.warn('Schedule name cannot be empty');
-        return false;
-      }
-  
-      // Check for duplicate names (excluding current schedule)
-      if (schedules.some(schedule => 
-        schedule.id !== scheduleId && 
-        schedule.name.toLowerCase() === trimmedName.toLowerCase()
-      )) {
-        console.warn('Schedule name already exists');
-        return false;
-      }
-  
-      setSchedules(prev => prev.map(schedule => 
-        schedule.id === scheduleId 
-          ? { ...schedule, name: trimmedName }
-          : schedule
-      ));
-  
-      return true;
-    }, [schedules, setSchedules]);
-  
-    /**
-     * Updates events for a specific schedule
-     * 
-     * @param {string} scheduleId - ID of schedule to update
-     * @param {Object} events - New events object
-     */
-    const updateScheduleEvents = useCallback((scheduleId, events) => {
-      setSchedules(prev => prev.map(schedule => 
-        schedule.id === scheduleId 
-          ? { ...schedule, events }
-          : schedule
-      ));
-    }, [setSchedules]);
-  
-    /**
-     * Adds an event to the active schedule
-     * 
-     * @param {Date} date - Date of the event
-     * @param {string} time - Time slot of the event
-     * @param {string} eventText - Text content of the event
-     * @returns {boolean} True if event was added successfully
-     */
-    const addEvent = useCallback((date, time, eventText) => {
-      if (!eventText.trim()) {
-        console.warn('Event text cannot be empty');
-        return false;
-      }
-  
-      const activeSchedule = getActiveSchedule();
-      const eventKey = getEventKey(date, time);
-      
-      const newEvents = { 
-        ...activeSchedule.events, 
-        [eventKey]: eventText.trim() 
-      };
-  
-      updateScheduleEvents(activeSchedule.id, newEvents);
-      return true;
-    }, [getActiveSchedule, updateScheduleEvents]);
-  
-    /**
-     * Updates an existing event
-     * 
-     * @param {string} eventKey - Key of the event to update
-     * @param {string} scheduleId - ID of the schedule containing the event
-     * @param {string} newText - New text content for the event
-     * @returns {boolean} True if event was updated successfully
-     */
-    const updateEvent = useCallback((eventKey, scheduleId, newText) => {
-      if (!newText.trim()) {
-        console.warn('Event text cannot be empty');
-        return false;
-      }
-  
-      const schedule = schedules.find(s => s.id === scheduleId);
-      if (!schedule) {
-        console.warn('Schedule not found');
-        return false;
-      }
-  
-      const currentEvent = schedule.events[eventKey];
-      const updatedEvent = typeof currentEvent === 'object' 
-        ? { ...currentEvent, text: newText.trim() }
-        : newText.trim();
-  
-      const newEvents = { 
-        ...schedule.events, 
-        [eventKey]: updatedEvent
-      };
-  
-      updateScheduleEvents(scheduleId, newEvents);
-      return true;
-    }, [schedules, updateScheduleEvents]);
-  
-    /**
-     * Removes an event from a schedule
-     * 
-     * @param {string} eventKey - Key of the event to remove
-     * @param {string} scheduleId - ID of the schedule containing the event
-     * @returns {boolean} True if event was removed successfully
-     */
-    const removeEvent = useCallback((eventKey, scheduleId) => {
-      const schedule = schedules.find(s => s.id === scheduleId);
-      if (!schedule) {
-        console.warn('Schedule not found');
-        return false;
-      }
-  
-      const newEvents = { ...schedule.events };
-      delete newEvents[eventKey];
-      
-      updateScheduleEvents(scheduleId, newEvents);
-      return true;
-    }, [schedules, updateScheduleEvents]);
-  
-    /**
-     * Moves an event from one time slot to another
-     * 
-     * @param {string} oldEventKey - Current event key
-     * @param {string} scheduleId - Schedule ID
-     * @param {Date} newDate - New date for the event
-     * @param {string} newTime - New time slot for the event
-     * @returns {boolean} True if event was moved successfully
-     */
-    const moveEvent = useCallback((oldEventKey, scheduleId, newDate, newTime) => {
-      const schedule = schedules.find(s => s.id === scheduleId);
-      if (!schedule) {
-        console.warn('Schedule not found');
-        return false;
-      }
-  
-      const event = schedule.events[oldEventKey];
-      if (!event) {
-        console.warn('Event not found');
-        return false;
-      }
-  
-      const newEventKey = getEventKey(newDate, newTime);
-      const newEvents = { ...schedule.events };
-      
-      // Remove old event and add at new location
-      delete newEvents[oldEventKey];
-      newEvents[newEventKey] = event;
-  
-      updateScheduleEvents(scheduleId, newEvents);
-      return true;
-    }, [schedules, updateScheduleEvents]);
-  
-    /**
-     * Gets statistics about all schedules
-     */
-    const getScheduleStats = useMemo(() => {
-      const stats = {
-        totalSchedules: schedules.length,
-        visibleSchedules: schedules.filter(s => s.isVisible).length,
-        totalEvents: 0,
-        eventsBySchedule: {}
-      };
-  
-      schedules.forEach(schedule => {
-        const eventCount = Object.keys(schedule.events).length;
-        stats.totalEvents += eventCount;
-        stats.eventsBySchedule[schedule.id] = {
-          name: schedule.name,
-          eventCount,
-          isVisible: schedule.isVisible
-        };
-      });
-  
-      return stats;
-    }, [schedules]);
-  
-    // Return all state and functions needed by components
-    return {
-      // State
-      schedules,
-      activeScheduleId,
-      showScheduleManager,
-      newScheduleName,
-      
-      // Setters for state
-      setActiveScheduleId,
-      setShowScheduleManager,
-      setNewScheduleName,
-      
-      // Schedule management functions
-      getActiveSchedule,
-      getVisibleSchedules,
-      createSchedule,
-      deleteSchedule,
-      toggleScheduleVisibility,
-      renameSchedule,
-      updateScheduleEvents,
-      
-      // Event management functions
-      addEvent,
-      updateEvent,
-      removeEvent,
-      moveEvent,
-      
-      // Computed values
-      getScheduleStats,
-      
-      // Validation helpers
-      canCreateSchedule: schedules.length < maxSchedules,
-      canDeleteSchedule: (scheduleId) => scheduleId !== 'main' && schedules.length > 1
-    };
-  };
+  // All changes derive from the latest saved collection, including batched edits.
+  const mutate = useCallback((change) => {
+    let changed = false;
+    const saved = setSchedules(previous => {
+      const next = change(previous);
+      changed = next !== previous;
+      return next;
+    });
+    return saved && changed;
+  }, [setSchedules]);
+  const getActiveSchedule = useCallback(() => schedules.find(s => s.id === activeScheduleId) || schedules[0], [schedules, activeScheduleId]);
+  const getVisibleSchedules = useCallback(() => schedules.filter(s => s.isVisible), [schedules]);
+  const createSchedule = useCallback((name = newScheduleName) => {
+    const trimmed = name?.trim();
+    if (!trimmed) return false;
+    const success = mutate(previous => {
+      if (previous.length >= maxSchedules || previous.some(s => s.name.toLowerCase() === trimmed.toLowerCase())) return previous;
+      return [...previous, { id: createId(), name: trimmed, events: {}, isVisible: true,
+        color: colors.scheduleColors[previous.length % colors.scheduleColors.length] }];
+    });
+    if (success) setNewScheduleName('');
+    return success;
+  }, [newScheduleName, mutate]);
+  const deleteSchedule = useCallback(id => {
+    const success = mutate(previous => id === 'main' || previous.length <= 1 || !previous.some(s => s.id === id)
+      ? previous : previous.filter(s => s.id !== id));
+    if (success && activeScheduleId === id) setActiveScheduleId('main');
+    return success;
+  }, [mutate, activeScheduleId]);
+  const toggleScheduleVisibility = useCallback(id => mutate(previous => previous.map(s =>
+    s.id === id ? { ...s, isVisible: !s.isVisible } : s)), [mutate]);
+  const renameSchedule = useCallback((id, name) => {
+    const trimmed = name?.trim();
+    if (!trimmed) return false;
+    return mutate(previous => {
+      if (!previous.some(s => s.id === id) || previous.some(s => s.id !== id && s.name.toLowerCase() === trimmed.toLowerCase())) return previous;
+      return previous.map(s => s.id === id ? { ...s, name: trimmed } : s);
+    });
+  }, [mutate]);
+  const updateScheduleEvents = useCallback((id, change) => mutate(previous => {
+    const schedule = previous.find(s => s.id === id);
+    if (!schedule) return previous;
+    const events = typeof change === 'function' ? change(schedule.events) : change;
+    if (events === schedule.events) return previous;
+    return previous.map(s => s.id === id ? { ...s, events } : s);
+  }), [mutate]);
+  const addEvent = useCallback((date, time, text) => {
+    if (!text?.trim()) return false;
+    let overlap = false;
+    const success = mutate(previous => {
+      const schedule = previous.find(s => s.id === activeScheduleId) || previous[0];
+      overlap = hasEventOverlap(schedule, date, time);
+      if (overlap) return previous;
+      return previous.map(s => s.id === schedule.id ? { ...s, events: { ...s.events, [getEventKey(date, time)]: text.trim() } } : s);
+    });
+    setEventError(overlap ? 'That time is occupied in this schedule. Choose another slot or edit the existing event.' : null);
+    return success;
+  }, [mutate, activeScheduleId]);
+  const updateEvent = useCallback((key, id, text) => {
+    if (!text?.trim()) return false;
+    const success = updateScheduleEvents(id, events => {
+      if (!Object.hasOwn(events, key)) return events;
+      return { ...events, [key]: typeof events[key] === 'object' ? { ...events[key], text: text.trim() } : text.trim() };
+    });
+    setEventError(success ? null : 'This event could not be saved. It may have changed in another tab.');
+    return success;
+  }, [updateScheduleEvents]);
+  const removeEvent = useCallback((key, id) => updateScheduleEvents(id, events => {
+    if (!Object.hasOwn(events, key)) return events;
+    const next = { ...events };
+    delete next[key];
+    return next;
+  }), [updateScheduleEvents]);
+  const moveEvent = useCallback((key, id, date, time) => {
+    return updateScheduleEvents(id, events => transformEvent(events, key, date, time).events);
+  }, [updateScheduleEvents]);
+  const getScheduleStats = useMemo(() => ({
+    totalSchedules: schedules.length, visibleSchedules: schedules.filter(s => s.isVisible).length,
+    totalEvents: schedules.reduce((sum, s) => sum + Object.keys(s.events).length, 0),
+    eventsBySchedule: Object.fromEntries(schedules.map(s => [s.id, { name: s.name, eventCount: Object.keys(s.events).length, isVisible: s.isVisible }]))
+  }), [schedules]);
+  return { schedules, activeScheduleId, showScheduleManager, newScheduleName, storageError, eventError, setEventError,
+    setActiveScheduleId, setShowScheduleManager, setNewScheduleName, getActiveSchedule, getVisibleSchedules,
+    createSchedule, deleteSchedule, toggleScheduleVisibility, renameSchedule, updateScheduleEvents,
+    addEvent, updateEvent, removeEvent, moveEvent, getScheduleStats,
+    canCreateSchedule: schedules.length < maxSchedules,
+    canDeleteSchedule: id => id !== 'main' && schedules.length > 1 && schedules.some(s => s.id === id) };
+};

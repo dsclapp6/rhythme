@@ -20,7 +20,7 @@
 
 
 // imports
-import React, { useState, useCallback } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { ChevronLeft, ChevronRight, Calendar, BarChart3, Clock, Layout, Bell } from 'lucide-react';
 // Import custom hooks
 import { useSchedules } from '../Hooks/useSchedules.js';
@@ -34,11 +34,14 @@ import CalendarModal from './Modals/CalendarModal.jsx';
 import LayoutModal from './Modals/LayoutModal.jsx';
 // Import utilities and constants
 import { colors, timeSlots, dayNames } from '../Constants/index.js';
-import { getWeekDates, addWeeks, formatDateRange } from '../Utilities/DateUtils.js';
+import { getWeekDates, addWeeks, addMonths, formatDateRange } from '../Utilities/DateUtils.js';
+import { downloadAppData } from '../Utilities/StorageUtils.js';
 import { getAllEventsAtSlot, getEventsForDate } from '../Utilities/EventUtils.js';
 
 
 const PlannerDashboard = () => {
+    const progressRef = useRef(null);
+    const remindersRef = useRef(null);
     // Week navigation state
     const [currentWeek, setCurrentWeek] = useState(new Date());
     const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -61,6 +64,8 @@ const PlannerDashboard = () => {
       schedules.schedules,
       schedules.updateScheduleEvents,
       (eventData) => {
+        schedules.setEventError(null);
+        setSelectedTimeSlot(null);
         setEditingEvent(eventData);
         setEventInput(typeof eventData.event === 'object' ? eventData.event.text : eventData.event);
       }
@@ -79,28 +84,22 @@ const PlannerDashboard = () => {
     }, []);
   
     const goToPreviousMonth = useCallback(() => {
-      setCurrentMonth(prev => {
-        const newDate = new Date(prev);
-        newDate.setMonth(newDate.getMonth() - 1);
-        return newDate;
-      });
+      setCurrentMonth(prev => addMonths(prev, -1));
     }, []);
   
     const goToNextMonth = useCallback(() => {
-      setCurrentMonth(prev => {
-        const newDate = new Date(prev);
-        newDate.setMonth(newDate.getMonth() + 1);
-        return newDate;
-      });
+      setCurrentMonth(prev => addMonths(prev, 1));
     }, []);
   
     // Event management functions
     const handleCellClick = useCallback((date, time) => {
       if (!dragAndDrop.isDragging) {
+        schedules.setEventError(null);
+        setEditingEvent(null);
         setSelectedTimeSlot({ date, time });
         setEventInput('');
       }
-    }, [dragAndDrop.isDragging]);
+    }, [dragAndDrop.isDragging, schedules]);
   
     const addEvent = useCallback(() => {
       if (selectedTimeSlot && eventInput.trim()) {
@@ -115,7 +114,7 @@ const PlannerDashboard = () => {
           setSelectedTimeSlot(null);
         }
       }
-    }, [selectedTimeSlot, eventInput, schedules.addEvent]);
+    }, [selectedTimeSlot, eventInput, schedules]);
   
     const editEvent = useCallback(() => {
       if (editingEvent && eventInput.trim()) {
@@ -130,13 +129,14 @@ const PlannerDashboard = () => {
           setEditingEvent(null);
         }
       }
-    }, [editingEvent, eventInput, schedules.updateEvent]);
+    }, [editingEvent, eventInput, schedules]);
   
     const closeEventModal = useCallback(() => {
       setSelectedTimeSlot(null);
       setEditingEvent(null);
       setEventInput('');
-    }, []);
+      schedules.setEventError(null);
+    }, [schedules]);
   
     // Get active reminders for display
     const todaysReminders = todos.getActiveReminders();
@@ -154,7 +154,6 @@ const PlannerDashboard = () => {
           userSelect: dragAndDrop.isDragging ? 'none' : 'auto',
           cursor: dragAndDrop.getDragCursor()
         }}
-        onMouseUp={dragAndDrop.handleDragEnd}
       >
         {/* Header */}
         <header style={{
@@ -292,8 +291,16 @@ const PlannerDashboard = () => {
         </header>
   
         <div style={{ flex: 1, padding: '24px' }}>
+          {(schedules.storageError || todos.storageErrors.length > 0 || dragAndDrop.dragError) && (
+            <div role="alert" style={{ backgroundColor: 'white', padding: '12px 16px', marginBottom: '20px', borderRadius: '12px', border: `2px solid ${colors.periwinkle[300]}`, color: colors.periwinkle[800] }}>
+              {schedules.storageError || todos.storageErrors[0] || dragAndDrop.dragError}
+              <button onClick={() => {
+                try { downloadAppData(); } catch { window.alert('A backup could not be downloaded. Keep this tab open and check browser storage permissions.'); }
+              }} style={{ marginLeft: '12px', color: colors.periwinkle[700], cursor: 'pointer' }}>Export backup</button>
+            </div>
+          )}
           {/* Progress Tracker */}
-          <div style={{
+          <div ref={progressRef} style={{
             backgroundColor: 'white',
             borderRadius: '16px',
             border: `2px solid ${colors.periwinkle[200]}`,
@@ -329,7 +336,7 @@ const PlannerDashboard = () => {
           </div>
   
           {/* Today's Reminders Tracker */}
-          <div style={{
+          <div ref={remindersRef} style={{
             backgroundColor: 'white',
             borderRadius: '16px',
             border: `2px solid ${colors.periwinkle[200]}`,
@@ -347,7 +354,7 @@ const PlannerDashboard = () => {
               gap: '8px'
             }}>
               <Bell size={20} />
-              Today's Reminders
+              Today&#39;s Reminders
             </h3>
             <div style={{ fontSize: '14px', color: colors.periwinkle[600] }}>
               {todaysReminders.length === 0 ? (
@@ -520,6 +527,17 @@ const PlannerDashboard = () => {
                       return (
                         <div
                           key={`${dayIndex}-${time}`}
+                          data-planner-date={date.toDateString()}
+                          data-planner-time={time}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Add event ${date.toDateString()} at ${time}`}
+                          onKeyDown={(event) => {
+                            if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                              event.preventDefault();
+                              handleCellClick(date, time);
+                            }
+                          }}
                           style={{
                             backgroundColor: isSelected ? colors.periwinkle[200] : 
                                            cellDragState.isDragTarget ? '#fef3c7' :
@@ -627,11 +645,7 @@ const PlannerDashboard = () => {
                                     flex: 1
                                   }}
                                   onMouseDown={(e) => dragAndDrop.handleEventClick(date, time, e, eventData)}
-                                  onMouseMove={(e) => {
-                                    if (e.buttons === 1 && dragAndDrop.canDragEvent(eventData)) {
-                                      dragAndDrop.handleDragStart(date, time, e, eventData, 'move');
-                                    }
-                                  }}
+
                                 >
                                   <span style={{
                                     wordWrap: 'break-word',
@@ -644,6 +658,8 @@ const PlannerDashboard = () => {
                                       ` (${eventData.event.startTime} - ${eventData.event.endTime})`}
                                   </span>
                                   <button
+                                    aria-label={`Delete ${typeof eventData.event === 'object' ? eventData.event.text : eventData.event}`}
+                                    onMouseDown={(e) => e.stopPropagation()}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       schedules.removeEvent(eventData.key, eventData.scheduleId);
@@ -719,7 +735,7 @@ const PlannerDashboard = () => {
                     key={section.id}
                     title={section.title} 
                     todos={todos.getTodoList(section.id)} 
-                    type={section.id} 
+                    type={section.id === 'goals' ? 'goal' : section.id === 'reminders' ? 'reminder' : section.id}
                     newTodoInputs={todos.newTodoInputs}
                     setNewTodoInputs={todos.setNewTodoInputs}
                     addTodo={todos.addTodo}
@@ -747,7 +763,7 @@ const PlannerDashboard = () => {
                       key={section.id}
                       title={section.title} 
                       todos={todos.getTodoList(section.id)} 
-                      type={section.id} 
+                      type={section.id === 'goals' ? 'goal' : section.id === 'reminders' ? 'reminder' : section.id}
                       newTodoInputs={todos.newTodoInputs}
                       setNewTodoInputs={todos.setNewTodoInputs}
                       addTodo={todos.addTodo}
@@ -778,6 +794,8 @@ const PlannerDashboard = () => {
           eventInput={eventInput}
           setEventInput={setEventInput}
           schedules={schedules.schedules}
+          activeScheduleId={schedules.activeScheduleId}
+          error={schedules.eventError || schedules.storageError}
         />
   
         {/* Schedule Manager Modal */}
@@ -838,10 +856,10 @@ const PlannerDashboard = () => {
           }}>
             {[
               { icon: Calendar, label: 'Calendar', action: () => setShowCalendarModal(true) },
-              { icon: BarChart3, label: 'Progress', action: () => {} },
+              { icon: BarChart3, label: 'Progress', action: () => progressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
               { icon: Clock, label: 'Schedules', action: () => schedules.setShowScheduleManager(true) },
               { icon: Layout, label: 'Layout', action: () => setShowLayoutModal(true) },
-              { icon: Bell, label: 'Reminders', action: () => {} }
+              { icon: Bell, label: 'Reminders', action: () => remindersRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
             ].map(({ icon: Icon, label, action }) => (
               <button
                 key={label}

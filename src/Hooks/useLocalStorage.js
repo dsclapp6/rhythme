@@ -1,163 +1,112 @@
-/**
- * useLocalStorage Custom Hook
- * 
- * A robust React hook for persisting state to localStorage with error handling,
- * automatic serialization/deserialization, and type safety.
- * 
- * Features:
- * - Automatic JSON serialization/deserialization
- * - Error handling with graceful fallbacks
- * - Lazy initial state evaluation
- * - Synchronization across browser tabs (optional)
- * - TypeScript-friendly (works with JavaScript too)
- */
-
-
-// imports
 import { useState, useEffect, useCallback, useRef } from 'react';
 
-
-/**
- * Custom hook for persisting state to localStorage
- * 
- * @param {string} key - localStorage key to store the value under
- * @param {any} initialValue - Initial value or function that returns initial value
- * @param {Object} options - Configuration options
- * @param {boolean} options.serialize - Whether to JSON serialize the value (default: true)
- * @param {boolean} options.syncAcrossTabs - Whether to sync across browser tabs (default: false)
- * @param {Function} options.validator - Optional function to validate loaded data
- * @returns {[any, Function, Function]} [value, setValue, removeValue]
+/** Persist synchronously before committing state. Refs keep batched updates from
+ * using a stale render; fresh reads keep other tabs' edits from being overwritten.
+ * Invalid existing data is left intact and writes are blocked until it is repaired.
  */
-
-
 export const useLocalStorage = (key, initialValue, options = {}) => {
-    const {
-      serialize = true,
-      syncAcrossTabs = false,
-      validator = null
-    } = options;
-  
-    // Use ref to store the key to detect changes
-    const keyRef = useRef(key);
-    
-    // Helper function to get value from localStorage
-    const getStoredValue = useCallback(() => {
-      try {
-        // Check if localStorage is available (may not be in some environments)
-        if (typeof window === 'undefined' || !window.localStorage) {
-          return initialValue;
-        }
-  
-        const item = window.localStorage.getItem(key);
-        
-        // If no item exists, return initial value
-        if (item === null) {
-          return typeof initialValue === 'function' ? initialValue() : initialValue;
-        }
-  
-        // Parse the stored value
-        const parsedValue = serialize ? JSON.parse(item) : item;
-        
-        // Validate the parsed value if validator is provided
-        if (validator && !validator(parsedValue)) {
-          console.warn(`Invalid data found in localStorage for key "${key}", using initial value`);
-          return typeof initialValue === 'function' ? initialValue() : initialValue;
-        }
-        
-        return parsedValue;
-      } catch (error) {
-        console.error(`Error reading from localStorage for key "${key}":`, error);
-        return typeof initialValue === 'function' ? initialValue() : initialValue;
+  const settings = useRef();
+  settings.current = { initialValue, serialize: true, syncAcrossTabs: true, ...options };
+  const current = useRef(null);
+  const fallback = () => typeof settings.current.initialValue === 'function'
+    ? settings.current.initialValue() : settings.current.initialValue;
+
+  const read = useCallback((storageKey) => {
+    try {
+      if (typeof window === 'undefined') return { key: storageKey, value: fallback(), error: null };
+      const raw = window.localStorage.getItem(storageKey);
+      let loaded = raw === null ? fallback()
+        : settings.current.serialize ? JSON.parse(raw) : raw;
+      if (settings.current.normalize) loaded = settings.current.normalize(loaded);
+      if (settings.current.validator && !settings.current.validator(loaded)) {
+        throw new Error('Saved data could not be read safely. It has been preserved.');
       }
-    }, [key, initialValue, serialize, validator]);
-  
-    // Initialize state with stored value or initial value
-    const [value, setValue] = useState(getStoredValue);
-  
-    // Helper function to set value in localStorage
-    const setStoredValue = useCallback((newValue) => {
-      try {
-        // Allow function updates like normal useState
-        const valueToStore = newValue instanceof Function ? newValue(value) : newValue;
-        
-        // Update state
-        setValue(valueToStore);
-        
-        // Store in localStorage if available
-        if (typeof window !== 'undefined' && window.localStorage) {
-          if (valueToStore === null || valueToStore === undefined) {
-            window.localStorage.removeItem(key);
-          } else {
-            const serializedValue = serialize ? JSON.stringify(valueToStore) : valueToStore;
-            window.localStorage.setItem(key, serializedValue);
-          }
-        }
-      } catch (error) {
-        console.error(`Error writing to localStorage for key "${key}":`, error);
-        // Still update state even if localStorage fails
-        setValue(newValue instanceof Function ? newValue(value) : newValue);
+      return { key: storageKey, value: loaded, error: null };
+    } catch (error) {
+      return { key: storageKey, value: fallback(), error: error.message, blocked: true };
+    }
+  }, []);
+
+  const [value, setValue] = useState(() => {
+    current.current = read(key);
+    return current.current.value;
+  });
+  const [storageError, setStorageError] = useState(current.current.error);
+
+  const setStoredValue = useCallback((update) => {
+    // Read before updating so stale tabs cannot overwrite newer edits.
+    const latest = read(key);
+    if (latest.blocked) {
+      setStorageError(latest.error);
+      return false;
+    }
+    const previous = typeof window === 'undefined' && current.current.key === key
+      ? current.current.value : latest.value;
+    const next = typeof update === 'function' ? update(previous) : update;
+    if (settings.current.validator && !settings.current.validator(next)) {
+      setStorageError('This change could not be saved safely. Your previous data is intact.');
+      return false;
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        const storage = window.localStorage;
+        if (next === undefined) storage.removeItem(key);
+        else storage.setItem(key, settings.current.serialize ? JSON.stringify(next) : String(next));
       }
-    }, [key, value, serialize]);
-  
-    // Helper function to remove value from localStorage
-    const removeStoredValue = useCallback(() => {
-      try {
-        setValue(typeof initialValue === 'function' ? initialValue() : initialValue);
-        
-        if (typeof window !== 'undefined' && window.localStorage) {
-          window.localStorage.removeItem(key);
-        }
-      } catch (error) {
-        console.error(`Error removing from localStorage for key "${key}":`, error);
+      current.current = { key, value: next, error: null };
+      setValue(next);
+      setStorageError(null);
+      return true;
+    } catch {
+      setStorageError('Your browser could not save this change. Free storage or export a backup, then try again.');
+      return false;
+    }
+  }, [key, read]);
+
+  const removeStoredValue = useCallback(() => {
+    try {
+      if (typeof window !== 'undefined') window.localStorage.removeItem(key);
+      const next = fallback();
+      current.current = { key, value: next, error: null };
+      setValue(next);
+      setStorageError(null);
+      return true;
+    } catch {
+      setStorageError('Your browser could not remove this data.');
+      return false;
+    }
+  }, [key]);
+
+  useEffect(() => {
+    const refresh = () => {
+      const latest = read(key);
+      if (!latest.blocked) {
+        current.current = latest;
+        setValue(latest.value);
       }
-    }, [key, initialValue]);
-  
-    // Handle storage events for cross-tab synchronization
-    useEffect(() => {
-      if (!syncAcrossTabs || typeof window === 'undefined') {
-        return;
-      }
-  
-      const handleStorageChange = (e) => {
-        // Only respond to changes for our specific key
-        if (e.key !== key) return;
-        
-        try {
-          if (e.newValue === null) {
-            // Key was removed
-            setValue(typeof initialValue === 'function' ? initialValue() : initialValue);
-          } else {
-            // Key was updated
-            const newValue = serialize ? JSON.parse(e.newValue) : e.newValue;
-            
-            // Validate if validator is provided
-            if (!validator || validator(newValue)) {
-              setValue(newValue);
-            }
-          }
-        } catch (error) {
-          console.error(`Error handling storage change for key "${key}":`, error);
-        }
-      };
-  
-      window.addEventListener('storage', handleStorageChange);
-      
-      return () => {
-        window.removeEventListener('storage', handleStorageChange);
-      };
-    }, [key, initialValue, serialize, validator, syncAcrossTabs]);
-  
-    // Re-read from localStorage if key changes
-    useEffect(() => {
-      if (keyRef.current !== key) {
-        keyRef.current = key;
-        setValue(getStoredValue);
-      }
-    }, [key, getStoredValue]);
-  
-    return [value, setStoredValue, removeStoredValue];
-  };
-  
+      setStorageError(latest.error);
+    };
+    if (current.current.key !== key) {
+      current.current = read(key);
+      setValue(current.current.value);
+      setStorageError(current.current.error);
+    }
+    if (!settings.current.syncAcrossTabs || typeof window === 'undefined') return;
+    const onStorage = (event) => {
+      if ((event.key === key || event.key === null) && event.storageArea === window.localStorage) refresh();
+    };
+    window.addEventListener('storage', onStorage);
+    // Refresh after returning to a background tab as well as on storage events.
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [key, read, options.syncAcrossTabs]);
+
+  return [value, setStoredValue, removeStoredValue, storageError];
+};
+
   /**
    * Specialized hook for storing arrays in localStorage
    * Provides additional array manipulation methods

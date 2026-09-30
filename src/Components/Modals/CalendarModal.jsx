@@ -30,6 +30,7 @@
 import React, { useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon } from 'lucide-react';
 import { colors, dayNamesShort } from '../../Constants/index.js';
+import { useModal } from '../../Hooks/useModal.js';
 import { getCalendarDates, isToday, isCurrentMonth, formatDate } from '../../Utilities/DateUtils.js';
 
 
@@ -42,12 +43,11 @@ const CalendarModal = ({
     schedules,
     getEventsForDate
   }) => {
+  useModal(isOpen, onClose, 'calendar-modal-title');
+
     // Handle keyboard navigation
     const handleKeyDown = useCallback((e) => {
       switch (e.key) {
-        case 'Escape':
-          onClose();
-          break;
         case 'ArrowLeft':
           if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
@@ -63,7 +63,7 @@ const CalendarModal = ({
         default:
           break;
       }
-    }, [onClose, onPreviousMonth, onNextMonth]);
+    }, [onPreviousMonth, onNextMonth]);
   
     // Handle backdrop click
     const handleBackdropClick = useCallback((e) => {

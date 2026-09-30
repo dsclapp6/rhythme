@@ -16,9 +16,20 @@
 
 
 // imports
-import { useState, useCallback, useMemo } from 'react';
-import { useLocalStorage, useLocalStorageObject } from './useLocalStorage.js';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useLocalStorage } from './useLocalStorage.js';
 import { storageKeys, defaultProgressStats, defaultRecurringTodos, defaultLayoutSections } from '../Constants/index.js';
+import { createId, repairDuplicateIds, isTodoList, isRecord, isRecurring, normalizeRecurring, isProgress, normalizeProgress, isLayout } from '../Utilities/DataUtils.js';
+import { getWeekString } from '../Utilities/DateUtils.js';
+
+const recurringPeriod = (type, now = new Date()) => {
+  if (type === 'day') return now.toDateString();
+  if (type === 'week') return getWeekString(now);
+  if (type === 'month') return `${now.getFullYear()}-${now.getMonth()}`;
+  return String(now.getFullYear());
+};
+const isCompleted = (value, type, now) => value === true || (value?.completed === true && value.period === recurringPeriod(type, now));
+
 
 
 /**
@@ -30,36 +41,59 @@ import { storageKeys, defaultProgressStats, defaultRecurringTodos, defaultLayout
 
 export const useTodos = () => {
     // Individual todo lists for different time periods
-    const [dayTodos, setDayTodos] = useLocalStorage(storageKeys.dayTodos, []);
-    const [weekTodos, setWeekTodos] = useLocalStorage(storageKeys.weekTodos, []);
-    const [monthTodos, setMonthTodos] = useLocalStorage(storageKeys.monthTodos, []);
-    const [yearTodos, setYearTodos] = useLocalStorage(storageKeys.yearTodos, []);
-    const [goals, setGoals] = useLocalStorage(storageKeys.goals, []);
-    const [reminders, setReminders] = useLocalStorage(storageKeys.reminders, []);
+    const [dayTodos, setDayTodos, , dayTodosError] = useLocalStorage(storageKeys.dayTodos, [], { validator: isTodoList, normalize: repairDuplicateIds });
+    const [weekTodos, setWeekTodos, , weekTodosError] = useLocalStorage(storageKeys.weekTodos, [], { validator: isTodoList, normalize: repairDuplicateIds });
+    const [monthTodos, setMonthTodos, , monthTodosError] = useLocalStorage(storageKeys.monthTodos, [], { validator: isTodoList, normalize: repairDuplicateIds });
+    const [yearTodos, setYearTodos, , yearTodosError] = useLocalStorage(storageKeys.yearTodos, [], { validator: isTodoList, normalize: repairDuplicateIds });
+    const [goals, setGoals, , goalsError] = useLocalStorage(storageKeys.goals, [], { validator: isTodoList, normalize: repairDuplicateIds });
+    const [reminders, setReminders, , remindersError] = useLocalStorage(storageKeys.reminders, [], { validator: isTodoList, normalize: repairDuplicateIds });
   
     // Recurring todos storage and completion tracking
-    const [recurringTodos, setRecurringTodos] = useLocalStorage(
+    const [recurringTodos, setRecurringTodos, , recurringError] = useLocalStorage(
       storageKeys.recurringTodos, 
-      defaultRecurringTodos
+      defaultRecurringTodos, { validator: isRecurring, normalize: normalizeRecurring }
     );
     
-    const [recurringCompletionState, setRecurringCompletionState] = useLocalStorage(
+    const [completionRecords, setRecurringCompletionState, , completionError] = useLocalStorage(
       storageKeys.recurringCompletionState, 
-      {}
+      {}, { validator: isRecord }
     );
   
     // Progress tracking for motivation and statistics
-    const [progressStats, setProgressStats] = useLocalStorage(
+    const [progressStats, setProgressStats, , progressError] = useLocalStorage(
       storageKeys.progressStats, 
-      defaultProgressStats
+      defaultProgressStats, { validator: isProgress, normalize: normalizeProgress }
     );
   
     // Layout customization for ADHD-friendly experience
-    const [layoutSections, setLayoutSections] = useLocalStorage(
+    const [layoutSections, setLayoutSections, , layoutError] = useLocalStorage(
       storageKeys.layoutSections, 
-      defaultLayoutSections
+      defaultLayoutSections, { validator: isLayout }
     );
   
+    const [now, setNow] = useState(() => new Date());
+    useEffect(() => {
+      const refresh = () => setNow(new Date());
+      const timer = setInterval(refresh, 60_000);
+      window.addEventListener('focus', refresh);
+      return () => { clearInterval(timer); window.removeEventListener('focus', refresh); };
+    }, []);
+    // Upgrade old boolean checks once, preserving them for the current period.
+    useEffect(() => {
+      if (Object.values(completionRecords).some(value => typeof value === 'boolean')) {
+        setRecurringCompletionState(previous => Object.fromEntries(Object.entries(previous).map(([key, value]) =>
+          [key, typeof value === 'boolean' ? { completed: value, period: recurringPeriod(key.split('-')[0]) } : value])));
+      }
+    }, [completionRecords, setRecurringCompletionState]);
+    const recurringCompletionState = useMemo(() => Object.fromEntries(
+      Object.entries(recurringTodos).flatMap(([type, list]) => list.map(todo => {
+        const key = `${type}-${todo.id}`;
+        return [key, isCompleted(completionRecords[key], type, now)];
+      }))
+    ), [completionRecords, recurringTodos, now]);
+    const storageErrors = [dayTodosError, weekTodosError, monthTodosError, yearTodosError, goalsError,
+      remindersError, recurringError, completionError, progressError, layoutError].filter(Boolean);
+
     // Input states for adding new todos
     const [newTodoInputs, setNewTodoInputs] = useState({
       day: '',
@@ -93,7 +127,7 @@ export const useTodos = () => {
         goal: setGoals,
         reminder: setReminders
       };
-      return setters[type];
+      return setters[type === 'goals' ? 'goal' : type === 'reminders' ? 'reminder' : type];
     }, [setDayTodos, setWeekTodos, setMonthTodos, setYearTodos, setGoals, setReminders]);
   
     /**
@@ -111,7 +145,7 @@ export const useTodos = () => {
         goal: goals,
         reminder: reminders
       };
-      return lists[type] || [];
+      return lists[type === 'goals' ? 'goal' : type === 'reminders' ? 'reminder' : type] || [];
     }, [dayTodos, weekTodos, monthTodos, yearTodos, goals, reminders]);
   
     /**
@@ -124,6 +158,7 @@ export const useTodos = () => {
       setProgressStats(prev => {
         const today = new Date().toDateString();
         let newStats = { ...prev };
+        if (action === 'complete' && prev.streakDays === 0) newStats.streakDays = 1;
         
         // Update completion counters
         if (action === 'complete') {
@@ -141,7 +176,7 @@ export const useTodos = () => {
         }
         
         // Update activity streak
-        if (prev.lastActiveDate !== today) {
+        if (action === 'complete' && prev.lastActiveDate !== today) {
           const yesterday = new Date();
           yesterday.setDate(yesterday.getDate() - 1);
           
@@ -167,7 +202,7 @@ export const useTodos = () => {
      * @returns {boolean} True if todo was added successfully
      */
     const addTodo = useCallback((type, text = null) => {
-      const todoText = text || newTodoInputs[type];
+      const todoText = text ?? newTodoInputs[type];
       
       if (!todoText || !todoText.trim()) {
         console.warn('Todo text cannot be empty');
@@ -182,7 +217,7 @@ export const useTodos = () => {
   
       // Create new todo object
       const newTodo = {
-        id: Date.now() + Math.random(), // Ensure uniqueness
+        id: createId(),
         text: todoText.trim(),
         completed: false,
         createdAt: new Date().toISOString(),
@@ -190,10 +225,10 @@ export const useTodos = () => {
       };
   
       // Add to appropriate list
-      setter(prev => [...prev, newTodo]);
+      if (!setter(prev => [...prev, newTodo])) return false;
   
       // Clear input if we used the input state
-      if (!text) {
+      if (text === null) {
         setNewTodoInputs(prev => ({ ...prev, [type]: '' }));
       }
   
@@ -217,7 +252,7 @@ export const useTodos = () => {
       let wasCompleted = false;
       let nowCompleted = false;
   
-      setter(prev => {
+      const saved = setter(prev => {
         return prev.map(todo => {
           if (todo.id === id) {
             wasCompleted = todo.completed;
@@ -233,6 +268,7 @@ export const useTodos = () => {
         });
       });
   
+      if (!saved) return false;
       // Update progress statistics
       if (!wasCompleted && nowCompleted) {
         updateProgressStats('todo', 'complete');
@@ -257,8 +293,7 @@ export const useTodos = () => {
         return false;
       }
   
-      setter(prev => prev.filter(todo => todo.id !== id));
-      return true;
+      return setter(prev => prev.filter(todo => todo.id !== id));
     }, [getTodoSetter]);
   
     /**
@@ -269,7 +304,7 @@ export const useTodos = () => {
      * @returns {boolean} True if recurring todo was added successfully
      */
     const addRecurringTodo = useCallback((type, text = null) => {
-      const todoText = text || newRecurringInputs[type];
+      const todoText = text ?? newRecurringInputs[type];
       
       if (!todoText || !todoText.trim()) {
         console.warn('Recurring todo text cannot be empty');
@@ -282,18 +317,18 @@ export const useTodos = () => {
       }
   
       const newRecurringTodo = {
-        id: Date.now() + Math.random(),
+        id: createId(),
         text: todoText.trim(),
         createdAt: new Date().toISOString()
       };
   
-      setRecurringTodos(prev => ({
+      if (!setRecurringTodos(prev => ({
         ...prev,
         [type]: [...prev[type], newRecurringTodo]
-      }));
+      }))) return false;
   
       // Clear input if we used the input state
-      if (!text) {
+      if (text === null) {
         setNewRecurringInputs(prev => ({ ...prev, [type]: '' }));
       }
   
@@ -313,10 +348,10 @@ export const useTodos = () => {
         return false;
       }
   
-      setRecurringTodos(prev => ({
+      if (!setRecurringTodos(prev => ({
         ...prev,
         [type]: prev[type].filter(todo => todo.id !== id)
-      }));
+      }))) return false;
   
       // Also remove from completion state
       setRecurringCompletionState(prev => {
@@ -342,13 +377,15 @@ export const useTodos = () => {
       }
   
       const key = `${type}-${id}`;
-      const wasCompleted = recurringCompletionState[key] || false;
-      const nowCompleted = !wasCompleted;
-  
-      setRecurringCompletionState(prev => ({
-        ...prev,
-        [key]: nowCompleted
-      }));
+      if (!recurringTodos[type].some(todo => todo.id === id)) return false;
+      let wasCompleted;
+      let nowCompleted;
+      const saved = setRecurringCompletionState(prev => {
+        wasCompleted = isCompleted(prev[key], type, new Date());
+        nowCompleted = !wasCompleted;
+        return { ...prev, [key]: { completed: nowCompleted, period: recurringPeriod(type) } };
+      });
+      if (!saved) return false;
   
       // Update progress statistics
       if (!wasCompleted && nowCompleted) {
@@ -358,7 +395,7 @@ export const useTodos = () => {
       }
   
       return true;
-    }, [recurringCompletionState, setRecurringCompletionState, updateProgressStats]);
+    }, [recurringTodos, setRecurringCompletionState, updateProgressStats]);
   
     /**
      * Gets active reminders (uncompleted reminders)
@@ -439,6 +476,7 @@ export const useTodos = () => {
   
     // Return all state and functions needed by components
     return {
+      storageErrors,
       // Todo lists
       dayTodos,
       weekTodos,

@@ -67,7 +67,7 @@ export const isTimeSlotInEvent = (timeSlot, startTime, endTime) => {
   const startIndex = getTimeIndex(startTime);
   const endIndex = getTimeIndex(endTime);
   
-  return slotIndex >= startIndex && slotIndex <= endIndex;
+  return slotIndex >= 0 && startIndex >= 0 && endIndex >= startIndex && slotIndex >= startIndex && slotIndex <= endIndex;
 };
 
 
@@ -102,7 +102,7 @@ export const getAllEventsAtSlot = (schedules, date, time) => {
 
     // Check for multi-slot events that span this time
     for (const [key, event] of Object.entries(schedule.events)) {
-      if (typeof event === 'object' && event.startTime && event.endTime) {
+      if (event && typeof event === 'object' && event.startTime && event.endTime) {
         const eventDate = key.split('-').slice(0, -1).join('-'); // Remove time part
         
         if (eventDate === date.toDateString()) {
@@ -243,7 +243,7 @@ export const hasEventOverlap = (schedule, date, startTime, endTime = startTime, 
     if (key === excludeKey) continue;
     
     if (key.startsWith(dateStr)) {
-      if (typeof event === 'object' && event.startTime && event.endTime) {
+      if (event && typeof event === 'object' && event.startTime && event.endTime) {
         // Check overlap with multi-slot event
         if (!(getTimeIndex(endTime) < getTimeIndex(event.startTime) || 
               getTimeIndex(startTime) > getTimeIndex(event.endTime))) {
@@ -296,4 +296,47 @@ export const getEventDisplayMetrics = (startTime, endTime = startTime, cellHeigh
     height: duration * cellHeight,
     duration: duration
   };
+};
+/** Move or resize one event without ever replacing another event. End slots are
+ * inclusive, matching the existing grid. Invalid drops leave the collection intact.
+ */
+export const transformEvent = (events, key, date, time, mode = 'move', grabbedTime = null) => {
+  const reject = error => ({ events, error });
+  if (!Object.hasOwn(events, key)) return reject('This event has changed or been removed.');
+  if (!(date instanceof Date) || Number.isNaN(date.getTime()) || !isValidTimeSlot(time)) return reject('Choose a valid time slot.');
+  const event = events[key];
+  const originalTime = typeof event === 'object' ? event.startTime : key.split('-').pop();
+  const start = getTimeIndex(originalTime);
+  const end = typeof event === 'object' ? getTimeIndex(event.endTime) : start;
+  if (start < 0 || end < start) return reject('This event has an invalid duration.');
+  let nextStart = getTimeIndex(time);
+  let nextEnd;
+  if (mode === 'move') {
+    // Keep the slot grabbed under the pointer when moving the middle of an event.
+    const grabbed = getTimeIndex(grabbedTime || originalTime);
+    if (grabbed < start || grabbed > end) return reject('Choose a slot within this event.');
+    nextStart -= grabbed - start;
+    nextEnd = nextStart + end - start;
+  } else {
+    if (key.slice(0, key.lastIndexOf('-')) !== date.toDateString()) return reject('Resize an event within the same day.');
+    if (mode === 'extend-up') {
+      nextEnd = end;
+    } else if (mode === 'extend-down') {
+      nextEnd = nextStart;
+      nextStart = start;
+    } else return reject('Unknown drag operation.');
+  }
+  if (nextStart < 0 || nextEnd >= timeSlots.length || nextEnd < nextStart) return reject('The full event must fit within the visible time slots.');
+  const startTime = timeSlots[nextStart];
+  const endTime = timeSlots[nextEnd];
+  if (hasEventOverlap({ events }, date, startTime, endTime, key)) return reject('That time is occupied in this schedule. Your events have been kept in place.');
+  const nextKey = getEventKey(date, startTime);
+  if (nextKey === key && startTime === originalTime && nextEnd === end) return { events, error: null };
+  const next = { ...events };
+  // Preserve any existing metadata instead of reducing the event to its text.
+  next[nextKey] = typeof event === 'object'
+    ? { ...event, startTime, endTime }
+    : nextStart === nextEnd ? event : createExtendedEvent(event, startTime, endTime);
+  if (nextKey !== key) delete next[key];
+  return { events: next, error: null };
 };
